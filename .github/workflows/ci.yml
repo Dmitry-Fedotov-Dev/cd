@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck deploy.sh install.sh starters/deploy.sh
+
+  # End to end on a real server: deploys testdata/hello as project cd-selftest.
+  # Needs the repository variable CD_SERVER and `cdctl project add cd-selftest --type static
+  # --repo Dmitry-Fedotov-Dev/cd` on that server.
+  selftest:
+    needs: [go, shell]
+    if: github.event_name == 'push' && vars.CD_SERVER != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: cd-selftest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tar -czf "$RUNNER_TEMP/hello.tgz" -C testdata hello
+      - uses: ./
+        with:
+          server: ${{ vars.CD_SERVER }}
+          project: cd-selftest
+          bundle: ${{ runner.temp }}/hello.tgz
+      - uses: ./
+        with:
+          server: ${{ vars.CD_SERVER }}
+          project: cd-selftest
+          action: status

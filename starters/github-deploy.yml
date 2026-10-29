@@ -1,0 +1,36 @@
+# Copy to .github/workflows/deploy.yml.
+# Repository settings → Secrets and variables → Actions → Variables: CD_SERVER = https://deploy.example.com
+# The server owner allows the project once: cdctl project add <name> --repo <owner>/<repo>
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [deploy, status, logs, rollback]
+        default: deploy
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token is the only credential
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # tests, lint, build checks go here — the server builds the release itself
+      - uses: Dmitry-Fedotov-Dev/cd@v1
+        with:
+          server: ${{ vars.CD_SERVER }}
+          project: CHANGE-ME
+          action: ${{ inputs.action || 'deploy' }}

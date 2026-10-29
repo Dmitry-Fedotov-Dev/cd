@@ -1,0 +1,30 @@
+# cd for GitLab CI. Include it and extend the hidden job:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/gitlab/deploy.yml
+#   deploy:
+#     extends: .cd-deploy
+#     variables:
+#       CD_PROJECT: app            # CD_SERVER: set as a CI/CD variable of the project or group
+#     environment: production
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#
+# The server checks the job's ID token: project_path, ref, ref_protected — protect the branch.
+
+.cd-deploy:
+  image: alpine:3.20
+  variables:
+    CD_VERSION: v1
+    CD_ACTION: deploy
+    GIT_DEPTH: "1"
+  id_tokens:
+    CD_ID_TOKEN:
+      aud: $CD_SERVER
+  before_script:
+    - apk add --no-cache bash curl git >/dev/null
+  script:
+    - curl -fsSL "https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/${CD_VERSION}/deploy.sh" -o /tmp/cd-deploy.sh
+    - bash /tmp/cd-deploy.sh "$CD_ACTION"
+  interruptible: false
+  resource_group: cd-$CD_PROJECT

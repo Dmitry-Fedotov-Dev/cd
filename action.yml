@@ -1,0 +1,38 @@
+name: cd deploy
+description: >-
+  Deploy the repository to a cd server, or ask it for status, logs or a rollback. Authenticates
+  with the job's OIDC token (needs `permissions: id-token: write`); no secrets to store.
+branding:
+  icon: upload-cloud
+  color: green
+inputs:
+  server:
+    description: cd server URL, e.g. https://deploy.example.com (keep it in a repository variable, CD_SERVER).
+    required: true
+  project:
+    description: Project name on that server.
+    required: true
+  action:
+    description: deploy | status | logs | rollback
+    default: deploy
+  bundle:
+    description: A ready tar.gz to send; empty — git archive of the commit.
+    default: ""
+  paths:
+    description: Only these paths go into the git archive (space-separated); empty — the whole repository.
+    default: ""
+  lines:
+    description: Log lines for action logs.
+    default: "100"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CD_SERVER: ${{ inputs.server }}
+        CD_PROJECT: ${{ inputs.project }}
+        CD_BUNDLE: ${{ inputs.bundle }}
+        CD_PATHS: ${{ inputs.paths }}
+        ACTION: ${{ inputs.action }}
+        LINES: ${{ inputs.lines }}
+      run: '"${{ github.action_path }}/deploy.sh" "$ACTION" "$LINES"'

@@ -1,0 +1,24 @@
+# cd: type node — npm ci, npm run build (if the project has it), npm start as an unprivileged user.
+FROM node:{{.Node}} AS build
+WORKDIR /app
+ENV npm_config_update_notifier=false npm_config_fund=false npm_config_audit=false \
+    NODE_OPTIONS=--max-old-space-size=512
+COPY package*.json ./
+RUN if [ -f package-lock.json ]; then npm ci --include=dev; else npm install --include=dev; fi
+COPY . .
+RUN if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then npm run build; fi \
+ && npm prune --omit=dev
+
+FROM node:{{.Node}}
+RUN apk add --no-cache tini
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0 HOME=/tmp TMPDIR=/tmp \
+    npm_config_update_notifier=false npm_config_cache=/tmp/.npm \
+    NODE_OPTIONS=--max-old-space-size={{.Heap}}
+COPY --from=build /app /app
+{{- if .DataMount}}
+RUN mkdir -p {{.DataMount}} && chown {{.User}} {{.DataMount}}
+{{- end}}
+EXPOSE 3000
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["npm", "start", "--silent"]
