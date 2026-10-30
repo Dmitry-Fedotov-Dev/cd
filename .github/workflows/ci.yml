@@ -26,11 +26,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: shellcheck deploy.sh install.sh starters/deploy.sh
 
-  # End to end on a real server: deploys testdata/hello as project cd-selftest.
-  # Needs the repository variable CD_SERVER and `cdctl project add cd-selftest --type static
-  # --repo Dmitry-Fedotov-Dev/cd` on that server.
+  # The whole deploy path on a throwaway Docker host (this runner): a fake OIDC issuer, the
+  # real server, engine, limited builder and client. Static and node apps, a foreign
+  # repository refused, a broken release rolled back, data kept across releases, rollback,
+  # a bad bundle rejected, the container's limits. Nothing touches a real server.
+  e2e:
+    needs: [go]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -c -tags e2e -o "$RUNNER_TEMP/cd-e2e" ./internal/e2e
+      # root: the engine gives the app's data directory to the container user (10001)
+      - run: sudo "$RUNNER_TEMP/cd-e2e" -test.v -test.timeout 15m -client ./deploy.sh
+
+  # On the real server, through GitHub's own OIDC: deploys a page stamped with this commit as
+  # project cd-selftest and checks that its public address serves exactly this commit.
+  # Needs the repository variables CD_SERVER and CD_SELFTEST_URL, and on that server
+  # `cdctl project add cd-selftest --repo Dmitry-Fedotov-Dev/cd --type static --domain …`.
   selftest:
-    needs: [go, shell]
+    needs: [go, shell, e2e]
     if: github.event_name == 'push' && vars.CD_SERVER != ''
     runs-on: ubuntu-latest
     permissions:
@@ -38,14 +56,45 @@ jobs:
       id-token: write
     concurrency:
       group: cd-selftest
+    env:
+      CD_SERVER: ${{ vars.CD_SERVER }}
+      CD_SELFTEST_URL: ${{ vars.CD_SELFTEST_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: tar -czf "$RUNNER_TEMP/hello.tgz" -C testdata hello
+      - name: Stamp the page with this commit
+        run: |
+          cp -r testdata/hello "$RUNNER_TEMP/hello"
+          echo "<p>commit <code id=sha>$GITHUB_SHA</code></p>" >>"$RUNNER_TEMP/hello/index.html"
+          tar -czf "$RUNNER_TEMP/hello.tgz" -C "$RUNNER_TEMP" hello
       - uses: ./
         with:
           server: ${{ vars.CD_SERVER }}
           project: cd-selftest
           bundle: ${{ runner.temp }}/hello.tgz
+      - name: The public address serves this commit
+        if: env.CD_SELFTEST_URL != ''
+        run: |
+          for _ in $(seq 1 12); do
+            if curl -fsS "$CD_SELFTEST_URL" | grep -q "$GITHUB_SHA"; then
+              echo "ok: $CD_SELFTEST_URL serves $GITHUB_SHA"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::$CD_SELFTEST_URL does not serve $GITHUB_SHA"
+          curl -sS "$CD_SELFTEST_URL" | tail -n 3
+          exit 1
+      - name: A project this repository may not deploy is refused
+        run: |
+          set +e
+          # without GITHUB_ACTIONS the client reports in plain text: the refusal is expected here
+          env -u GITHUB_ACTIONS -u GITHUB_STEP_SUMMARY CD_PROJECT=cd-selftest-not-allowed             CD_BUNDLE="$RUNNER_TEMP/hello.tgz" bash deploy.sh
+          code=$?
+          if [ "$code" != 5 ]; then
+            echo "::error::expected exit 5 (not allowed), got $code"
+            exit 1
+          fi
+          echo "ok: refused with 5"
       - uses: ./
         with:
           server: ${{ vars.CD_SERVER }}
