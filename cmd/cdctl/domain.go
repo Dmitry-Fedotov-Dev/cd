@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -158,13 +159,17 @@ func connect(cfg project.Server, store project.Store, p *project.Project, yes bo
 			die("the record %s was created but not saved in the project (%v): delete it in Porkbun by hand", id, err)
 		}
 		fmt.Printf("DNS: created %s → %s\n", p.Domain, cfg.DNS.IP)
+		// Caddy asks for the certificate as soon as it reloads. If the CA looks the name up
+		// before the zone's nameservers publish it, it caches "no such name" for the zone's
+		// negative TTL (30 min at Porkbun) — so Caddy waits until they do.
+		waitPublished(cfg.DNS.Zone, p.Domain, cfg.DNS.IP, 5*time.Minute)
 	}
 
 	if err := caddyOf(cfg).Put(p.Name, proxy.Site(p.Name, p.Domain, p.Port)); err != nil {
 		die("caddy: %v", err)
 	}
 	fmt.Printf("Caddy: %s → 127.0.0.1:%d\n", p.Domain, p.Port)
-	waitHTTPS(p.Domain, 90*time.Second)
+	waitHTTPS(p.Domain, 3*time.Minute)
 }
 
 // disconnect takes the name away: the Caddy site, and the A record if cd created it.
@@ -204,6 +209,38 @@ func disconnect(cfg project.Server, store project.Store, p *project.Project, yes
 	}
 }
 
+// waitPublished waits until every nameserver of the zone answers fqdn with ip.
+func waitPublished(zone, fqdn, ip string, limit time.Duration) {
+	nss, err := net.LookupNS(zone)
+	if err != nil || len(nss) == 0 {
+		fmt.Printf("DNS: cannot find the nameservers of %s (%v); not waiting\n", zone, err)
+		return
+	}
+	fmt.Printf("DNS: waiting until %d nameservers publish it", len(nss))
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		ready := 0
+		for _, ns := range nss {
+			r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ns.Host, "53"))
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			addrs, err := r.LookupHost(ctx, fqdn)
+			cancel()
+			if err == nil && slices.Contains(addrs, ip) {
+				ready++
+			}
+		}
+		if ready == len(nss) {
+			fmt.Println(" ok")
+			return
+		}
+		fmt.Print(".")
+		time.Sleep(5 * time.Second)
+	}
+	fmt.Println("\n  not everywhere yet: the certificate may take up to 30 minutes")
+}
+
 // waitHTTPS waits until the domain answers over HTTPS with a valid certificate.
 func waitHTTPS(domain string, limit time.Duration) {
 	fmt.Printf("HTTPS: waiting for the certificate of %s", domain)
@@ -222,7 +259,7 @@ func waitHTTPS(domain string, limit time.Duration) {
 		fmt.Print(".")
 		time.Sleep(5 * time.Second)
 	}
-	fmt.Printf("\n  not yet: DNS may take a few minutes. Check later: curl -sI https://%s\n", domain)
+	fmt.Printf("\n  not yet: Caddy keeps trying (up to 30 minutes if the CA saw the name before it existed). Check later: curl -sI https://%s\n", domain)
 }
 
 func zoneHint(cfg project.Server) string {
