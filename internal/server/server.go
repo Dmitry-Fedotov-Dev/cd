@@ -95,6 +95,11 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if p.Stopped && (action == "deploy" || action == "rollback") {
+		finish(Denied, http.StatusLocked, "project "+name+" is stopped by the server owner")
+		return
+	}
+
 	sha := r.URL.Query().Get("sha")
 	if action == "deploy" && !shaRe.MatchString(sha) {
 		finish(engine.BadInput, http.StatusBadRequest, "sha must be 7-64 hex characters")

@@ -117,3 +117,28 @@ func TestStatus(t *testing.T) {
 		t.Fatal(body)
 	}
 }
+
+func TestStoppedProject(t *testing.T) {
+	store := project.Store{Dir: t.TempDir()}
+	if err := store.Put(&project.Project{Name: "app", Type: "node", Port: 3100, Stopped: true,
+		Allow: []project.Rule{{"iss": project.GitHubIssuer, "repository": "me/app", "ref": "refs/heads/main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	eng := &fakeEngine{}
+	s := &Server{Store: store, Verifier: fakeVerifier{}, Engine: eng, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Version: "test"}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	for _, url := range []string{"/v1/deploy?project=app&sha=abcdef1", "/v1/rollback?project=app"} {
+		code, body := call(t, srv.URL+url, "me/app:refs/heads/main", "x")
+		if code != http.StatusLocked || !strings.Contains(body, "CD-RESULT: 5 project app is stopped") {
+			t.Errorf("%s: %d %q", url, code, body)
+		}
+	}
+	if eng.deployed != "" {
+		t.Fatal("engine was called")
+	}
+	if _, body := call(t, srv.URL+"/v1/status?project=app", "me/app:refs/heads/main", ""); !strings.Contains(body, "CD-RESULT: 0") {
+		t.Errorf("status of a stopped project: %q", body)
+	}
+}

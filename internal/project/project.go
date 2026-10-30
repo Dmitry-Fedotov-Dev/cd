@@ -89,6 +89,10 @@ type Project struct {
 	User        string `json:"user,omitempty"`       // container user; default 10001:10001
 	MaxBundleMB int    `json:"max_bundle_mb"`
 
+	// Stopped is set by `cdctl stop`: the container is stopped and the repository may not
+	// deploy or roll back until `cdctl start`.
+	Stopped bool `json:"stopped,omitempty"`
+
 	CPUs   string `json:"cpus"`
 	Memory string `json:"memory"`
 	PIDs   int    `json:"pids"`

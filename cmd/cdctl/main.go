@@ -4,7 +4,10 @@
 //	                      [--gitlab | --issuer URL] [--type node|static|dockerfile] [--port auto|N]
 //	                      [--domain D] [--health /healthz] [--data /app/data] [--env-file F]
 //	                      [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50]
-//	cdctl project list | show NAME | rm NAME
+//	cdctl project list | show NAME
+//	cdctl stop NAME       stop the app and refuse its deploys; cdctl start NAME undoes it
+//	cdctl project rm NAME [--purge]   take the app down for good (--purge: its data too)
+//	cdctl top             CPU, memory and processes of every app and of the builder
 //	cdctl caddy NAME      print a Caddy site block for the project's domain
 //	cdctl version
 package main
@@ -15,6 +18,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -45,12 +50,18 @@ func main() {
 		p := get(store, args[2])
 		b, _ := json.MarshalIndent(p, "", "  ")
 		fmt.Println(string(b))
-	case len(args) == 3 && args[0] == "project" && args[1] == "rm":
-		get(store, args[2])
-		if err := store.Delete(args[2]); err != nil {
-			die("%v", err)
+	case len(args) >= 3 && len(args) <= 4 && args[0] == "project" && args[1] == "rm":
+		purge := len(args) == 4
+		if purge && args[3] != "--purge" {
+			die("unknown flag %s", args[3])
 		}
-		fmt.Printf("removed %s from cdd. Its container keeps running: docker rm -f cd-%s\n", args[2], args[2])
+		remove(store, cfg.StateDir, get(store, args[2]), purge)
+	case len(args) == 2 && args[0] == "stop":
+		stop(store, cfg.StateDir, get(store, args[1]))
+	case len(args) == 2 && args[0] == "start":
+		start(store, get(store, args[1]))
+	case len(args) == 1 && args[0] == "top":
+		top(store)
 	case len(args) == 2 && args[0] == "caddy":
 		caddy(get(store, args[1]))
 	case len(args) == 1 && args[0] == "version":
@@ -66,7 +77,10 @@ const usage = `usage:
         [--gitlab | --issuer URL] [--type node|static|dockerfile] [--port auto|N] [--domain D]
         [--health /healthz] [--data /app/data] [--env-file F]
         [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50]
-  cdctl project list | show NAME | rm NAME
+  cdctl project list | show NAME
+  cdctl stop NAME | start NAME
+  cdctl project rm NAME [--purge]
+  cdctl top
   cdctl caddy NAME
   cdctl version`
 
@@ -167,13 +181,20 @@ func list(store project.Store) {
 		die("%v", err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTYPE\tPORT\tDOMAIN\tALLOWED")
+	fmt.Fprintln(tw, "NAME\tSTATE\tTYPE\tPORT\tDOMAIN\tALLOWED")
 	for _, p := range ps {
 		var who []string
 		for _, r := range p.Allow {
 			who = append(who, r["repository"]+r["project_path"]+"@"+strings.TrimPrefix(r["ref"], "refs/heads/"))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", p.Name, p.Type, p.Port, p.Domain, strings.Join(who, ", "))
+		state := strings.TrimSpace(dockerOut("container", "inspect", "-f", "{{.State.Status}}", "cd-"+p.Name))
+		if state == "" {
+			state = "not deployed"
+		}
+		if p.Stopped {
+			state += ", stopped by owner"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", p.Name, state, p.Type, p.Port, p.Domain, strings.Join(who, ", "))
 	}
 	tw.Flush()
 }
@@ -191,6 +212,110 @@ func caddy(p *project.Project) {
 	reverse_proxy 127.0.0.1:%[3]d
 }
 `, p.Name, p.Domain, p.Port)
+}
+
+// stop takes the app off the air at once and keeps it off: the container stops (and stays
+// stopped across reboots), and the repository can no longer deploy or roll back.
+func stop(store project.Store, stateDir string, p *project.Project) {
+	p.Stopped = true
+	if err := store.Put(p); err != nil {
+		die("%v", err)
+	}
+	if err := docker("stop", "--time", "10", "cd-"+p.Name); err != nil {
+		fmt.Printf("no running container cd-%s\n", p.Name)
+	}
+	fmt.Printf("%s is stopped; its deploys are refused. To bring it back: cdctl start %s\n", p.Name, p.Name)
+	if building(stateDir, p) {
+		fmt.Printf("a deploy of %s was in progress: run cdctl stop %s again when it ends\n", p.Name, p.Name)
+	}
+}
+
+func start(store project.Store, p *project.Project) {
+	p.Stopped = false
+	if err := store.Put(p); err != nil {
+		die("%v", err)
+	}
+	if err := docker("start", "cd-"+p.Name); err != nil {
+		fmt.Printf("%s may deploy again; it has no container yet, the next deploy starts it\n", p.Name)
+		return
+	}
+	fmt.Printf("%s is running and may deploy again\n", p.Name)
+}
+
+// remove takes the app down for good: container, network, images, release record and the
+// permission to deploy. Its data stays unless purge.
+func remove(store project.Store, stateDir string, p *project.Project, purge bool) {
+	c := "cd-" + p.Name
+	_ = docker("rm", "-f", c, c+"-old")
+	_ = docker("network", "rm", c)
+	for _, img := range strings.Fields(dockerOut("images", "-q", c)) {
+		_ = docker("rmi", "-f", img)
+	}
+	dir := filepath.Join(stateDir, "projects", p.Name)
+	if purge {
+		_ = os.RemoveAll(dir)
+	} else {
+		_ = os.Remove(filepath.Join(dir, "release.json"))
+	}
+	if err := store.Delete(p.Name); err != nil {
+		die("%v", err)
+	}
+	fmt.Printf("removed %s: container, images, permission to deploy\n", p.Name)
+	if purge {
+		fmt.Printf("its data is deleted (%s)\n", dir)
+	} else {
+		fmt.Printf("its data is kept in %s\n", filepath.Join(dir, "data"))
+	}
+	if p.Domain != "" {
+		fmt.Printf("%s still points here: remove its block from the reverse proxy\n", p.Domain)
+	}
+}
+
+// top shows what every app and the builder use right now.
+func top(store project.Store) {
+	ps, err := store.List()
+	if err != nil {
+		die("%v", err)
+	}
+	names := []string{}
+	for _, p := range ps {
+		if running("cd-" + p.Name) {
+			names = append(names, "cd-"+p.Name)
+		}
+	}
+	if running("buildx_buildkit_cd-builder0") {
+		names = append(names, "buildx_buildkit_cd-builder0")
+	}
+	if len(names) == 0 {
+		fmt.Println("nothing is running")
+		return
+	}
+	args := append([]string{"stats", "--no-stream", "--format",
+		"table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}"}, names...)
+	if err := docker(args...); err != nil {
+		die("docker stats: %v", err)
+	}
+	fmt.Println("CPU % is of one core (50% = half a core); an app cannot go over its --cpus")
+}
+
+func running(c string) bool {
+	return strings.TrimSpace(dockerOut("container", "inspect", "-f", "{{.State.Running}}", c)) == "true"
+}
+
+func building(stateDir string, p *project.Project) bool {
+	m, _ := filepath.Glob(filepath.Join(stateDir, "projects", p.Name, "build-*"))
+	return len(m) > 0
+}
+
+func docker(args ...string) error {
+	cmd := exec.Command("docker", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+func dockerOut(args ...string) string {
+	b, _ := exec.Command("docker", args...).Output()
+	return string(b)
 }
 
 func get(store project.Store, name string) *project.Project {
