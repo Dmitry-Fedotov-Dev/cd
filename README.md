@@ -1,5 +1,22 @@
 # cd
 
+## Quick start
+
+```sh
+# 1. on the server (Linux, Docker, systemd, a reverse proxy for HTTPS): install cd once
+curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/install.sh && sudo bash install.sh --public-url https://deploy.example.com
+
+# 2. on the server: allow a repository to deploy project "app"
+sudo cdctl project add app --repo you/app --type node --domain app.example.com
+
+# 3. in the repository's folder (GitHub CLI logged in): connect it; every push to main deploys
+curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/init.sh && bash init.sh app https://deploy.example.com
+```
+
+Details: [in a project](#in-a-project), [on a server](#on-a-server), [security](SECURITY.md).
+
+## What it is
+
 Deploy any repository to your own server from GitHub Actions or GitLab CI — without SSH keys,
 passwords or tokens in the repository. The CI job proves who it is with the OIDC token its
 platform signs; the server (`cdd`) builds the release with its own Dockerfile and runs it under
