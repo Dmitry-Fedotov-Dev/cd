@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: shellcheck deploy.sh install.sh starters/deploy.sh
+      - run: shellcheck deploy.sh install.sh init.sh starters/deploy.sh
 
   # The whole deploy path on a throwaway Docker host (this runner): a fake OIDC issuer, the
   # real server, engine, limited builder and client. Static and node apps, a foreign

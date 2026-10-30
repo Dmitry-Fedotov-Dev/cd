@@ -35,6 +35,17 @@ docs/           PROTOCOL.md — the wire protocol, for other clients and servers
 
 ## In a project
 
+**GitHub, in one line** — in the repository's folder, with the [GitHub CLI](https://cli.github.com)
+logged in:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/init.sh && bash init.sh app https://deploy.example.com
+```
+
+[`init.sh`](init.sh) checks the server answers, adds `.github/workflows/deploy.yml` for project
+`app`, sets the repository variable `CD_SERVER`, commits only that file and pushes; the first
+deploy starts at once. By hand instead:
+
 **GitHub.** Copy [`starters/github-deploy.yml`](starters/github-deploy.yml) to
 `.github/workflows/deploy.yml`, set the project name, and add the repository variable
 `CD_SERVER` (Settings → Secrets and variables → Actions → Variables). The workflow needs
@@ -142,7 +153,7 @@ bundle rules, the release swap. Exit codes: `0` ok · `1` failed, previous relea
 
 ```bash
 go test ./...
-shellcheck deploy.sh install.sh starters/deploy.sh
+shellcheck deploy.sh install.sh init.sh starters/deploy.sh
 ```
 
 Releases: push a `vX.Y.Z` tag; the workflow builds `cdd`/`cdctl` for linux amd64/arm64,
