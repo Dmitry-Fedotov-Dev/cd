@@ -3,7 +3,7 @@
 //	cdctl project add NAME --repo OWNER/REPO [--branch main] [--environment production]
 //	                      [--gitlab | --issuer URL] [--type node|static|dockerfile] [--port auto|N]
 //	                      [--domain D] [--health /healthz] [--data /app/data] [--env-file F]
-//	                      [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50]
+//	                      [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50] [--deploys-per-hour 6]
 //	cdctl project list | show NAME
 //	cdctl stop NAME       stop the app and refuse its deploys; cdctl start NAME undoes it
 //	cdctl project rm NAME [--purge]   take the app down for good (--purge: its data too)
@@ -86,7 +86,7 @@ const usage = `usage:
   cdctl project add NAME --repo OWNER/REPO [--branch main] [--environment production]
         [--gitlab | --issuer URL] [--type node|static|dockerfile] [--port auto|N] [--domain D]
         [--health /healthz] [--data /app/data] [--env-file F]
-        [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50]
+        [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50] [--deploys-per-hour 6]
   cdctl project list | show NAME
   cdctl stop NAME | start NAME
   cdctl project rm NAME [--purge]
@@ -121,6 +121,7 @@ func add(cfg project.Server, store project.Store, name string, args []string) {
 	memory := fs.String("memory", "256m", "memory limit (no swap)")
 	pids := fs.Int("pids", 128, "process limit")
 	maxMB := fs.Int("max-bundle-mb", 50, "largest accepted bundle")
+	perHour := fs.Int("deploys-per-hour", 6, "deploys and rollbacks allowed per hour")
 	fs.Parse(args)
 	if *repo == "" {
 		die("--repo is required")
@@ -150,7 +151,7 @@ func add(cfg project.Server, store project.Store, name string, args []string) {
 	}
 	p.Allow = []project.Rule{rule}
 	p.Type, p.Domain, p.DataMount, p.EnvFile = *typ, *domain, *data, *envFile
-	p.CPUs, p.Memory, p.PIDs, p.MaxBundleMB = *cpus, *memory, *pids, *maxMB
+	p.CPUs, p.Memory, p.PIDs, p.MaxBundleMB, p.DeploysPerHour = *cpus, *memory, *pids, *maxMB, *perHour
 	if *health != "" {
 		p.Health = *health
 	} else if *typ == "static" && p.Health == "" {

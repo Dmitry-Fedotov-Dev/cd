@@ -123,6 +123,10 @@ type Project struct {
 	User        string `json:"user,omitempty"`       // container user; default 10001:10001
 	MaxBundleMB int    `json:"max_bundle_mb"`
 
+	// DeploysPerHour caps deploys and rollbacks of the project: each one is a build or a swap on
+	// the shared host, so a repository pushing in a loop cannot keep the server busy.
+	DeploysPerHour int `json:"deploys_per_hour"`
+
 	// Stopped is set by `cdctl stop`: the container is stopped and the repository may not
 	// deploy or roll back until `cdctl start`.
 	Stopped bool `json:"stopped,omitempty"`
@@ -163,6 +167,9 @@ func (p *Project) applyDefaults() {
 	}
 	if p.MaxBundleMB == 0 {
 		p.MaxBundleMB = 50
+	}
+	if p.DeploysPerHour == 0 {
+		p.DeploysPerHour = 6
 	}
 	if p.CPUs == "" {
 		p.CPUs = "0.5"

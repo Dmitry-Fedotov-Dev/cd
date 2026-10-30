@@ -30,6 +30,13 @@ The project's code runs twice, and both times boxed in:
   no-new-privileges, the project's CPU/memory/PID limits, no swap, its own Docker network,
   its port on 127.0.0.1 only, logs rotated. Writable: `/tmp` and its own data directory.
 
+A repository cannot create projects, names or ports: only the server owner does
+(`cdctl project add`). It deploys into its one project, at most `deploys_per_hour` (6) deploys
+and rollbacks an hour, one build at a time on the whole server; each deploy replaces the
+previous release (two images kept). Whatever it serves under its own name — any number of
+paths — runs inside that one container and its limits. Not capped: the size of its data
+directory and its outbound traffic; give a project to people you trust.
+
 Type `dockerfile` lets the project choose its base image and build steps; the run limits
 still apply. Enable it only for projects you trust with a build.
 

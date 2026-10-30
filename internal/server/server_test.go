@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dmitry-Fedotov-Dev/cd/internal/engine"
 	"github.com/Dmitry-Fedotov-Dev/cd/internal/oidc"
@@ -140,5 +141,38 @@ func TestStoppedProject(t *testing.T) {
 	}
 	if _, body := call(t, srv.URL+"/v1/status?project=app", "me/app:refs/heads/main", ""); !strings.Contains(body, "CD-RESULT: 0") {
 		t.Errorf("status of a stopped project: %q", body)
+	}
+}
+
+func TestDeploysPerHour(t *testing.T) {
+	store := project.Store{Dir: t.TempDir()}
+	if err := store.Put(&project.Project{Name: "app", Type: "node", Port: 3100, DeploysPerHour: 2,
+		Allow: []project.Rule{{"iss": project.GitHubIssuer, "repository": "me/app", "ref": "refs/heads/main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	s := &Server{Store: store, Verifier: fakeVerifier{}, Engine: &fakeEngine{}, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Version: "test", Now: func() time.Time { return now }}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	deploy := func() (int, string) {
+		return call(t, srv.URL+"/v1/deploy?project=app&sha=abcdef1", "me/app:refs/heads/main", "x")
+	}
+
+	for i := 0; i < 2; i++ {
+		if code, body := deploy(); code != 200 {
+			t.Fatalf("deploy %d: %d %q", i, code, body)
+		}
+		now = now.Add(10 * time.Minute)
+	}
+	if code, body := deploy(); code != http.StatusTooManyRequests || !strings.Contains(body, "CD-RESULT: 3 project app: at most 2 deploys an hour; the next one in 40m") {
+		t.Fatalf("third deploy within the hour: %d %q", code, body)
+	}
+	if _, body := call(t, srv.URL+"/v1/status?project=app", "me/app:refs/heads/main", ""); !strings.Contains(body, "CD-RESULT: 0") {
+		t.Fatalf("status is not limited: %q", body)
+	}
+	now = now.Add(41 * time.Minute)
+	if code, body := deploy(); code != 200 {
+		t.Fatalf("after the first one aged out: %d %q", code, body)
 	}
 }

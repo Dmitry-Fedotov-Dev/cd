@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dmitry-Fedotov-Dev/cd/internal/engine"
@@ -40,6 +41,10 @@ type Server struct {
 	Engine   Engine
 	Log      *slog.Logger
 	Version  string
+	Now      func() time.Time // time.Now by default; tests move it
+
+	mu     sync.Mutex
+	recent map[string][]time.Time // deploys and rollbacks per project in the last hour
 }
 
 var shaRe = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
@@ -98,6 +103,14 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 	if p.Stopped && (action == "deploy" || action == "rollback") {
 		finish(Denied, http.StatusLocked, "project "+name+" is stopped by the server owner")
 		return
+	}
+
+	if action == "deploy" || action == "rollback" {
+		if wait := s.take(p); wait > 0 {
+			finish(engine.Busy, http.StatusTooManyRequests, fmt.Sprintf("project %s: at most %d deploys an hour; the next one in %s",
+				name, p.DeploysPerHour, wait.Round(time.Minute)))
+			return
+		}
 	}
 
 	sha := r.URL.Query().Get("sha")
@@ -199,4 +212,30 @@ func short(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+// take counts a deploy or rollback against the project's hourly allowance; when the
+// allowance is used up it counts nothing and returns how long until the next one is allowed.
+func (s *Server) take(p *project.Project) time.Duration {
+	now := time.Now()
+	if s.Now != nil {
+		now = s.Now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recent == nil {
+		s.recent = map[string][]time.Time{}
+	}
+	kept := s.recent[p.Name][:0]
+	for _, t := range s.recent[p.Name] {
+		if now.Sub(t) < time.Hour {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= p.DeploysPerHour {
+		s.recent[p.Name] = kept
+		return time.Hour - now.Sub(kept[0])
+	}
+	s.recent[p.Name] = append(kept, now)
+	return 0
 }
