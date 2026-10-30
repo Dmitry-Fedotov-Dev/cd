@@ -99,6 +99,24 @@ sudo cdctl project list
 Only `me/app` on `main` (in the `production` environment) can deploy `app`; nothing else can,
 including other projects on the same server. To revoke: `cdctl project rm app`.
 
+**Domains, automatically** (Porkbun DNS + Caddy). Once per server:
+
+```bash
+sudo cdctl domain setup --zone example.com --ip 203.0.113.10   # asks for the Porkbun API keys
+```
+
+From then on `--domain app.example.com` in `project add` (or `cdctl domain app` later) asks
+`Create the DNS record app.example.com → 203.0.113.10? [y/N]`, writes the Caddy site to
+`/etc/caddy/cd/app.caddy`, validates, reloads Caddy and waits for HTTPS. `cdctl project rm`
+and `cdctl domain rm` take the name away again. cdctl creates a record only where the name
+has no records at all, and deletes only records it created: the rest of the zone, and the
+rest of the Caddyfile (besides one `import /etc/caddy/cd/*.caddy` line, added after a
+backup), are never touched.
+
+**Running apps:** `cdctl project list` (state of each), `cdctl top` (CPU, memory),
+`cdctl stop app` / `cdctl start app` (off the air at once, deploys refused until started),
+`cdctl project rm app [--purge]` (gone, with its data on `--purge`).
+
 | Type | Build | Run |
 |---|---|---|
 | `node` | `npm ci`, `npm run build` if present, prune dev deps | `npm start` |

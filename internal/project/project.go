@@ -30,6 +30,38 @@ type Server struct {
 	BuildMemory     string `json:"build_memory"`      // 1g
 	BuildCPUs       string `json:"build_cpus"`        // 1
 	BuildTimeoutMin int    `json:"build_timeout_min"` // 15
+
+	// Domains (cdctl domain): with dns set, cdctl creates a project's A record and its Caddy
+	// site; without it, it only prints the site block.
+	DNS   *DNS  `json:"dns,omitempty"`
+	Proxy Proxy `json:"proxy"`
+}
+
+// DNS is the zone cdctl may add project names to.
+type DNS struct {
+	Provider string `json:"provider"`  // porkbun
+	Zone     string `json:"zone"`      // example.com: projects get <name>.example.com
+	IP       string `json:"ip"`        // this server's public address
+	KeysFile string `json:"keys_file"` // /etc/cdd/porkbun.json, root only
+}
+
+// Proxy is where the host's Caddy takes cd's site files from.
+type Proxy struct {
+	Caddyfile string `json:"caddyfile"` // /etc/caddy/Caddyfile
+	SitesDir  string `json:"sites_dir"` // /etc/caddy/cd
+}
+
+// SaveServer writes the config back (cdctl domain setup).
+func SaveServer(path string, s Server) error {
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o640); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 const (
@@ -48,6 +80,8 @@ func DefaultServer() Server {
 		BuildMemory:     "1g",
 		BuildCPUs:       "1",
 		BuildTimeoutMin: 15,
+
+		Proxy: Proxy{Caddyfile: "/etc/caddy/Caddyfile", SitesDir: "/etc/caddy/cd"},
 	}
 }
 
@@ -92,6 +126,10 @@ type Project struct {
 	// Stopped is set by `cdctl stop`: the container is stopped and the repository may not
 	// deploy or roll back until `cdctl start`.
 	Stopped bool `json:"stopped,omitempty"`
+
+	// DNSRecordID is the A record cdctl created for Domain; cdctl deletes only that record.
+	// Empty when the name was made by hand (it is then never deleted by cd).
+	DNSRecordID string `json:"dns_record_id,omitempty"`
 
 	CPUs   string `json:"cpus"`
 	Memory string `json:"memory"`

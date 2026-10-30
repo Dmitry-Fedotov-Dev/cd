@@ -8,6 +8,9 @@
 //	cdctl stop NAME       stop the app and refuse its deploys; cdctl start NAME undoes it
 //	cdctl project rm NAME [--purge]   take the app down for good (--purge: its data too)
 //	cdctl top             CPU, memory and processes of every app and of the builder
+//	cdctl domain setup --zone example.com --ip 1.2.3.4   let cdctl manage project names (Porkbun + Caddy)
+//	cdctl domain NAME [--yes]      the project's A record (asks first), Caddy site, HTTPS check
+//	cdctl domain rm NAME [--yes]   take the name away (the record only if cd created it)
 //	cdctl caddy NAME      print a Caddy site block for the project's domain
 //	cdctl version
 package main
@@ -25,6 +28,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/Dmitry-Fedotov-Dev/cd/internal/project"
+	"github.com/Dmitry-Fedotov-Dev/cd/internal/proxy"
 )
 
 var version = "dev"
@@ -43,7 +47,13 @@ func main() {
 
 	switch {
 	case len(args) >= 3 && args[0] == "project" && args[1] == "add":
-		add(store, args[2], args[3:])
+		add(cfg, store, args[2], args[3:])
+	case len(args) >= 2 && args[0] == "domain" && args[1] == "setup":
+		domainSetup(config, cfg, args[2:])
+	case len(args) >= 3 && len(args) <= 4 && args[0] == "domain" && args[1] == "rm":
+		disconnect(cfg, store, get(store, args[2]), yesFlag(args[3:]), true)
+	case len(args) >= 2 && len(args) <= 3 && args[0] == "domain":
+		connect(cfg, store, get(store, args[1]), yesFlag(args[2:]))
 	case len(args) == 2 && args[0] == "project" && args[1] == "list":
 		list(store)
 	case len(args) == 3 && args[0] == "project" && args[1] == "show":
@@ -55,7 +65,7 @@ func main() {
 		if purge && args[3] != "--purge" {
 			die("unknown flag %s", args[3])
 		}
-		remove(store, cfg.StateDir, get(store, args[2]), purge)
+		remove(cfg, store, get(store, args[2]), purge)
 	case len(args) == 2 && args[0] == "stop":
 		stop(store, cfg.StateDir, get(store, args[1]))
 	case len(args) == 2 && args[0] == "start":
@@ -81,10 +91,19 @@ const usage = `usage:
   cdctl stop NAME | start NAME
   cdctl project rm NAME [--purge]
   cdctl top
+  cdctl domain setup --zone example.com --ip 1.2.3.4
+  cdctl domain NAME [--yes] | domain rm NAME [--yes]
   cdctl caddy NAME
   cdctl version`
 
-func add(store project.Store, name string, args []string) {
+func yesFlag(rest []string) bool {
+	if len(rest) == 1 && rest[0] != "--yes" {
+		die("unknown flag %s", rest[0])
+	}
+	return len(rest) == 1
+}
+
+func add(cfg project.Server, store project.Store, name string, args []string) {
 	fs := flag.NewFlagSet("project add", flag.ExitOnError)
 	repo := fs.String("repo", "", "OWNER/REPO (GitHub) or group/project (GitLab)")
 	branch := fs.String("branch", "main", "branch allowed to deploy")
@@ -93,7 +112,8 @@ func add(store project.Store, name string, args []string) {
 	issuer := fs.String("issuer", "", "OIDC issuer for a self-hosted GitLab, e.g. https://gitlab.example.com")
 	typ := fs.String("type", "node", "node | static | dockerfile")
 	port := fs.String("port", "auto", "host port on 127.0.0.1, or auto (3100-3999)")
-	domain := fs.String("domain", "", "public domain (for cdctl caddy)")
+	domain := fs.String("domain", "", "public domain, e.g. app.example.com (DNS and Caddy after cdctl domain setup)")
+	yes := fs.Bool("yes", false, "do not ask before creating or deleting DNS records")
 	health := fs.String("health", "", "health path (default /healthz, / for static)")
 	data := fs.String("data", "", "persistent directory inside the container, e.g. /app/data")
 	envFile := fs.String("env-file", "", "runtime env file on the server")
@@ -122,8 +142,11 @@ func add(store project.Store, name string, args []string) {
 	}
 
 	p, err := store.Get(name)
+	var prev project.Project
 	if err != nil {
 		p = &project.Project{Name: name}
+	} else {
+		prev = *p
 	}
 	p.Allow = []project.Rule{rule}
 	p.Type, p.Domain, p.DataMount, p.EnvFile = *typ, *domain, *data, *envFile
@@ -144,12 +167,20 @@ func add(store project.Store, name string, args []string) {
 		}
 		p.Port = n
 	}
+	if prev.Domain != "" && !strings.EqualFold(prev.Domain, p.Domain) {
+		disconnect(cfg, store, &prev, *yes, false) // the old name goes before the new one comes
+		p.DNSRecordID = ""
+	}
 	if err := store.Put(p); err != nil {
 		die("%v", err)
 	}
 	fmt.Printf("project %s: %s %s deploys to 127.0.0.1:%d (%s)\n", p.Name, *repo, *branch, p.Port, p.Type)
-	if p.Domain != "" {
-		fmt.Printf("reverse proxy: cdctl caddy %s\n", p.Name)
+	switch {
+	case p.Domain == "":
+	case cfg.DNS != nil:
+		connect(cfg, store, p, *yes)
+	default:
+		fmt.Printf("reverse proxy: cdctl caddy %s (or set up domains: cdctl domain setup)\n", p.Name)
 	}
 }
 
@@ -203,15 +234,7 @@ func caddy(p *project.Project) {
 	if p.Domain == "" {
 		die("project %s has no --domain", p.Name)
 	}
-	fmt.Printf(`# cd project %[1]s
-%[2]s {
-	encode zstd gzip
-	request_body {
-		max_size 10MB
-	}
-	reverse_proxy 127.0.0.1:%[3]d
-}
-`, p.Name, p.Domain, p.Port)
+	fmt.Print(proxy.Site(p.Name, p.Domain, p.Port))
 }
 
 // stop takes the app off the air at once and keeps it off: the container stops (and stays
@@ -243,8 +266,11 @@ func start(store project.Store, p *project.Project) {
 }
 
 // remove takes the app down for good: container, network, images, release record and the
-// permission to deploy. Its data stays unless purge.
-func remove(store project.Store, stateDir string, p *project.Project, purge bool) {
+// permission to deploy, its name (Caddy site; the DNS record if cd created it, after asking).
+// Its data stays unless purge.
+func remove(cfg project.Server, store project.Store, p *project.Project, purge bool) {
+	stateDir := cfg.StateDir
+	disconnect(cfg, store, p, false, false)
 	c := "cd-" + p.Name
 	_ = docker("rm", "-f", c, c+"-old")
 	_ = docker("network", "rm", c)
@@ -266,7 +292,7 @@ func remove(store project.Store, stateDir string, p *project.Project, purge bool
 	} else {
 		fmt.Printf("its data is kept in %s\n", filepath.Join(dir, "data"))
 	}
-	if p.Domain != "" {
+	if p.Domain != "" && cfg.DNS == nil {
 		fmt.Printf("%s still points here: remove its block from the reverse proxy\n", p.Domain)
 	}
 }

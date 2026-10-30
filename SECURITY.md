@@ -9,7 +9,12 @@
 | **Anyone else on the internet** | `GET /v1/healthz` | everything else: without a token for this server from an allowed repository the answer is `5` |
 | **This repository's maintainers** | publish new versions of `cdd`, `cdctl` and the client | reach any server: a server runs the version its owner installed and updates only when the owner reinstalls |
 
-There is no shared secret anywhere. A deploy is authorised by the OIDC token the CI platform
+The one secret cd keeps is the server owner's own DNS API key (`cdctl domain setup`): in a
+root-only file (`/etc/cdd/porkbun.json`, 0600), read only by `cdctl`, never by `cdd` or a
+project. It is typed in on the server and never passes through CI. Restrict it in Porkbun to
+the one domain.
+
+Deploys have no shared secret anywhere. A deploy is authorised by the OIDC token the CI platform
 signs for one job: it names the repository, branch and run, is valid for minutes and only for
 the server it was requested for (`aud`). Nothing to leak from the repository, nothing to rotate.
 
