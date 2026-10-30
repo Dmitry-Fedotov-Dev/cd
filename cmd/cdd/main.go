@@ -40,7 +40,7 @@ func main() {
 	s := &server.Server{
 		Store:    project.Store{Dir: cfg.ProjectsDir},
 		Verifier: &oidc.Verifier{Issuers: cfg.Issuers, Audience: cfg.PublicURL},
-		Engine:   &engine.Engine{StateDir: cfg.StateDir, BuildMinFreeMB: cfg.BuildMinFreeMB},
+		Engine:   newEngine(cfg),
 		Log:      log,
 		Version:  version,
 	}
@@ -65,4 +65,16 @@ func main() {
 		log.Error("listen", "err", err)
 		os.Exit(1)
 	}
+}
+
+func newEngine(cfg project.Server) *engine.Engine {
+	e := &engine.Engine{
+		StateDir:       cfg.StateDir,
+		BuildMinFreeMB: cfg.BuildMinFreeMB,
+		BuildTimeout:   time.Duration(cfg.BuildTimeoutMin) * time.Minute,
+	}
+	if cfg.BuildMemory != "" {
+		e.Builder, e.BuildMemory, e.BuildCPUs = "cd-builder", cfg.BuildMemory, cfg.BuildCPUs
+	}
+	return e
 }

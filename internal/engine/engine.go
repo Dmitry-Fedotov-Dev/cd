@@ -46,6 +46,13 @@ type Engine struct {
 	Docker         string // docker binary, "docker" by default
 	HTTP           *http.Client
 
+	// Builder is the buildx builder for releases, created on first use with BuildMemory and
+	// BuildCPUs as its container limits. Empty: plain `docker build`, no limits.
+	Builder      string
+	BuildMemory  string
+	BuildCPUs    string
+	BuildTimeout time.Duration // 0: only the request's own deadline
+
 	mu sync.Mutex
 }
 
@@ -96,9 +103,8 @@ func (e *Engine) Deploy(ctx context.Context, p *project.Project, sha, by string,
 	}
 	image := fmt.Sprintf("cd-%s:%s", p.Name, sha)
 	step(out, "build "+image)
-	if err := e.docker(ctx, out, "build", "--pull", "-f", dockerfile, "-t", image,
-		"--label", "cd.project="+p.Name, "--label", "cd.sha="+sha, srcDir); err != nil {
-		return Result{Failed, "build failed"}
+	if r := e.build(ctx, out, dockerfile, image, srcDir, "cd.project="+p.Name, "cd.sha="+sha); r.Code != OK {
+		return r
 	}
 
 	st, _ := e.state(p)
@@ -378,6 +384,55 @@ func (e *Engine) probe(ctx context.Context, p *project.Project) (int, string) {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 	return resp.StatusCode, string(b)
+}
+
+// build makes the image. The bundle's code runs here (npm install scripts, its build), so with
+// a Builder it runs in that BuildKit container under its memory/CPU limits, and every build
+// has a deadline.
+func (e *Engine) build(ctx context.Context, out io.Writer, dockerfile, image, dir string, labels ...string) Result {
+	if e.BuildTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.BuildTimeout)
+		defer cancel()
+	}
+	args := []string{"build", "--pull", "-f", dockerfile, "-t", image}
+	if e.Builder != "" {
+		if err := e.ensureBuilder(ctx, out); err != nil {
+			return Result{Failed, "builder: " + err.Error()}
+		}
+		args = []string{"buildx", "build", "--builder", e.Builder, "--load", "--progress", "plain",
+			"--pull", "-f", dockerfile, "-t", image}
+	}
+	for _, l := range labels {
+		args = append(args, "--label", l)
+	}
+	if err := e.docker(ctx, out, append(args, dir)...); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return Result{Failed, fmt.Sprintf("build took longer than %s", e.BuildTimeout)}
+		}
+		return Result{Failed, "build failed"}
+	}
+	return Result{OK, ""}
+}
+
+// ensureBuilder creates the limited BuildKit builder once. Its limits are fixed at creation:
+// after changing build_memory/build_cpus, `docker buildx rm <builder>` and the next build
+// recreates it.
+func (e *Engine) ensureBuilder(ctx context.Context, out io.Writer) error {
+	if e.quiet(ctx, "buildx", "inspect", e.Builder) == nil {
+		return nil
+	}
+	cpus, err := strconv.ParseFloat(e.BuildCPUs, 64)
+	if err != nil || cpus <= 0 {
+		return fmt.Errorf("build_cpus %q is not a number", e.BuildCPUs)
+	}
+	step(out, "create builder "+e.Builder+" (memory "+e.BuildMemory+", cpus "+e.BuildCPUs+")")
+	return e.docker(ctx, out, "buildx", "create", "--name", e.Builder, "--driver", "docker-container",
+		"--driver-opt", "memory="+e.BuildMemory,
+		"--driver-opt", "memory-swap="+e.BuildMemory,
+		"--driver-opt", "cpu-period=100000",
+		"--driver-opt", fmt.Sprintf("cpu-quota=%d", int(cpus*100000)),
+		"--bootstrap")
 }
 
 func (e *Engine) checkResources() (Result, bool) {

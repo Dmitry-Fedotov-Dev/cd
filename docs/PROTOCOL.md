@@ -79,6 +79,9 @@ The server builds the bundle with **its own** Dockerfile for the project type:
 | `static` | files to serve, or `package.json` with `scripts.build` producing `static_dir` (dist) | Caddy file server |
 | `dockerfile` | the project's Dockerfile (the owner enables this type deliberately) | the image's command |
 
+The build itself runs in a separate builder with the server's build limits (memory, CPU,
+time); a build over its limits fails with `1` and the previous release keeps serving.
+
 Whatever the type, the container runs with limits the bundle cannot change: no root (10001),
 read-only filesystem except `/tmp` and the data directory, all capabilities dropped,
 no-new-privileges, CPU/memory/PID limits, no swap, own network, port published on

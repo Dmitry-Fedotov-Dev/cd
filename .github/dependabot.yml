@@ -1,0 +1,7 @@
+# The Go code has no dependencies; the workflows' actions are pinned by commit and kept current here.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

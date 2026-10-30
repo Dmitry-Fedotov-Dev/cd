@@ -138,6 +138,7 @@ func TestEndToEnd(t *testing.T) {
 			}
 			exec.Command("docker", "network", "rm", "cd-"+n).Run()
 		}
+		exec.Command("docker", "buildx", "rm", "cd-e2e-builder").Run()
 	})
 
 	var api *httptest.Server
@@ -217,9 +218,15 @@ func TestEndToEnd(t *testing.T) {
 	if got := strings.TrimSpace(string(insp)); got != "true [ALL] 268435456 128 10001:10001 false" {
 		t.Fatalf("container hardening: %q", got)
 	}
+	lim, _ := exec.Command("docker", "container", "inspect", "-f", "{{.HostConfig.Memory}} {{.HostConfig.CpuQuota}}",
+		"buildx_buildkit_cd-e2e-builder0").Output()
+	if got := strings.TrimSpace(string(lim)); got != "1073741824 100000" {
+		t.Fatalf("builder limits: %q", got)
+	}
 }
 
-var eng = &engine.Engine{BuildMinFreeMB: 300}
+var eng = &engine.Engine{BuildMinFreeMB: 300, Builder: "cd-e2e-builder", BuildMemory: "1g", BuildCPUs: "1",
+	BuildTimeout: 10 * time.Minute}
 
 func randomSHA() string {
 	b := make([]byte, 20)

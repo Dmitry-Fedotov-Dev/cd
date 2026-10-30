@@ -108,6 +108,11 @@ including other projects on the same server. To revoke: `cdctl project rm app`.
 Every container: user 10001, read-only root, `/tmp` tmpfs, all capabilities dropped,
 no-new-privileges, CPU/memory/PID limits, no swap, its own network, port on 127.0.0.1 only,
 logs rotated. Data: `/var/lib/cdd/projects/<name>/data`. Server log: `journalctl -u cdd`.
+Builds — where the project's own code first runs (`npm ci`, its build) — happen in a separate
+BuildKit container with 1 GB, 1 CPU and 15 minutes (`build_memory`, `build_cpus`,
+`build_timeout_min` in `/etc/cdd/cdd.json`), so a bad build cannot starve the host.
+
+Who can do what, and how to verify a release: [SECURITY.md](SECURITY.md).
 
 ## Protocol
 

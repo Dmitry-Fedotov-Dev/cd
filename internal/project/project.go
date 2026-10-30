@@ -23,6 +23,13 @@ type Server struct {
 	ProjectsDir    string   `json:"projects_dir"`      // /etc/cdd/projects
 	StateDir       string   `json:"state_dir"`         // /var/lib/cdd
 	BuildMinFreeMB int      `json:"build_min_free_mb"` // refuse to build below this much free RAM
+
+	// Builds run the project's own code (npm install scripts, its build) — in a separate
+	// BuildKit container with these limits, so a build cannot starve the host.
+	// An empty build_memory builds with the plain docker builder, without limits.
+	BuildMemory     string `json:"build_memory"`      // 1g
+	BuildCPUs       string `json:"build_cpus"`        // 1
+	BuildTimeoutMin int    `json:"build_timeout_min"` // 15
 }
 
 const (
@@ -37,6 +44,10 @@ func DefaultServer() Server {
 		ProjectsDir:    "/etc/cdd/projects",
 		StateDir:       "/var/lib/cdd",
 		BuildMinFreeMB: 700,
+
+		BuildMemory:     "1g",
+		BuildCPUs:       "1",
+		BuildTimeoutMin: 15,
 	}
 }
 
