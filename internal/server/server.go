@@ -33,6 +33,8 @@ type Engine interface {
 	Status(ctx context.Context, p *project.Project, out io.Writer) engine.Result
 	Logs(ctx context.Context, p *project.Project, n int, out io.Writer) engine.Result
 	Rollback(ctx context.Context, p *project.Project, out io.Writer) engine.Result
+	Release(p *project.Project) (engine.State, error)
+	Adopt(ctx context.Context, p *project.Project, image, sha, by string, out io.Writer) engine.Result
 }
 
 type Server struct {
@@ -171,6 +173,9 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 	case "deploy":
 		fmt.Fprintf(out, "cd %s: deploy %s to %s (by %s)\n", s.Version, short(sha), p.Name, who)
 		res = s.Engine.Deploy(ctx, p, sha, who, bundleFile, out)
+		if res.Code == engine.OK {
+			s.followers(ctx, p, out, log)
+		}
 	case "status":
 		res = s.Engine.Status(ctx, p, out)
 	case "logs":
@@ -181,6 +186,28 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprintf(out, "CD-RESULT: %d %s\n", res.Code, res.Msg)
 	log.Info("request", "sha", sha, "result", res.Code, "msg", res.Msg, "took", time.Since(start).Round(time.Second).String())
+}
+
+// followers swaps the new release into every project that follows p. A follower that fails keeps its old
+// release (the swap restores it) and does not fail p's deploy.
+func (s *Server) followers(ctx context.Context, p *project.Project, out io.Writer, log *slog.Logger) {
+	ps, err := s.Store.List()
+	if err != nil {
+		return
+	}
+	st, err := s.Engine.Release(p)
+	if err != nil {
+		return
+	}
+	for _, f := range ps {
+		if f.Follows != p.Name || f.Stopped {
+			continue
+		}
+		fmt.Fprintf(out, "follower %s:\n", f.Name)
+		r := s.Engine.Adopt(ctx, f, st.Image, st.SHA, "follows "+p.Name, out)
+		fmt.Fprintf(out, "follower %s: %s\n", f.Name, r.Msg)
+		log.Info("follower", "follower", f.Name, "result", r.Code, "msg", r.Msg)
+	}
 }
 
 // identity is a short, human-readable "who" for logs and the release record.

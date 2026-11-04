@@ -118,7 +118,12 @@ func connect(cfg project.Server, store project.Store, p *project.Project, yes bo
 	}
 	sub, err := dns.Sub(p.Domain, cfg.DNS.Zone)
 	if err != nil {
-		die("%v", err)
+		if !pointsHere(p.Domain, cfg.DNS.IP) {
+			die("%v; a name outside it must already point to %s (an A record or a wildcard made by hand)", err, cfg.DNS.IP)
+		}
+		fmt.Printf("DNS: %s already points here (outside %s: cd never touches its records)\n", p.Domain, cfg.DNS.Zone)
+		site(cfg, p)
+		return
 	}
 	if ps, err := store.List(); err == nil {
 		for _, o := range ps {
@@ -165,11 +170,34 @@ func connect(cfg project.Server, store project.Store, p *project.Project, yes bo
 		waitPublished(cfg.DNS.Zone, p.Domain, cfg.DNS.IP, 5*time.Minute)
 	}
 
+	site(cfg, p)
+}
+
+// site writes the project's Caddy site and waits for its certificate.
+func site(cfg project.Server, p *project.Project) {
 	if err := caddyOf(cfg).Put(p.Name, proxy.Site(p.Name, p.Domain, p.Port)); err != nil {
 		die("caddy: %v", err)
 	}
 	fmt.Printf("Caddy: %s → 127.0.0.1:%d\n", p.Domain, p.Port)
 	waitHTTPS(p.Domain, 3*time.Minute)
+}
+
+// pointsHere: every IPv4 address of name is ip.
+func pointsHere(name, ip string) bool {
+	addrs, err := net.LookupIP(name)
+	if err != nil {
+		return false
+	}
+	found := false
+	for _, a := range addrs {
+		if v4 := a.To4(); v4 != nil {
+			if v4.String() != ip {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
 }
 
 // disconnect takes the name away: the Caddy site, and the A record if cd created it.

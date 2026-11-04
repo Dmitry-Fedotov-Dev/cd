@@ -135,6 +135,10 @@ type Project struct {
 	// Empty when the name was made by hand (it is then never deleted by cd).
 	DNSRecordID string `json:"dns_record_id,omitempty"`
 
+	// Follows names the project whose releases this one runs (`cdctl project clone`): the same image with its
+	// own port, data and env, swapped in whenever the other one deploys. Nobody deploys a follower itself.
+	Follows string `json:"follows,omitempty"`
+
 	CPUs   string `json:"cpus"`
 	Memory string `json:"memory"`
 	PIDs   int    `json:"pids"`
@@ -189,7 +193,9 @@ func (p *Project) Validate() error {
 	switch {
 	case !ValidName(p.Name):
 		return fmt.Errorf("bad project name %q (a-z, 0-9, -)", p.Name)
-	case len(p.Allow) == 0:
+	case p.Follows != "" && (!ValidName(p.Follows) || p.Follows == p.Name):
+		return fmt.Errorf("follows %q: another project's name", p.Follows)
+	case len(p.Allow) == 0 && p.Follows == "":
 		return errors.New("allow: at least one rule is required")
 	case p.Port < 1024 || p.Port > 65535:
 		return fmt.Errorf("port %d out of range", p.Port)

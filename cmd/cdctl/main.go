@@ -4,6 +4,8 @@
 //	                      [--gitlab | --issuer URL] [--type node|static|dockerfile] [--port auto|N]
 //	                      [--domain D] [--health /healthz] [--data /app/data] [--env-file F]
 //	                      [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50] [--deploys-per-hour 6]
+//	cdctl project clone NAME --from PROJECT [--domain D] [--env-file F] [--port auto|N] [--yes]
+//	                      run PROJECT's releases as NAME, with its own port, data and env
 //	cdctl project list | show NAME
 //	cdctl stop NAME       stop the app and refuse its deploys; cdctl start NAME undoes it
 //	cdctl project rm NAME [--purge]   take the app down for good (--purge: its data too)
@@ -16,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,7 +29,9 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
+	"github.com/Dmitry-Fedotov-Dev/cd/internal/engine"
 	"github.com/Dmitry-Fedotov-Dev/cd/internal/project"
 	"github.com/Dmitry-Fedotov-Dev/cd/internal/proxy"
 )
@@ -48,6 +53,8 @@ func main() {
 	switch {
 	case len(args) >= 3 && args[0] == "project" && args[1] == "add":
 		add(cfg, store, args[2], args[3:])
+	case len(args) >= 3 && args[0] == "project" && args[1] == "clone":
+		clone(cfg, store, args[2], args[3:])
 	case len(args) >= 2 && args[0] == "domain" && args[1] == "setup":
 		domainSetup(config, cfg, args[2:])
 	case len(args) >= 3 && len(args) <= 4 && args[0] == "domain" && args[1] == "rm":
@@ -87,6 +94,7 @@ const usage = `usage:
         [--gitlab | --issuer URL] [--type node|static|dockerfile] [--port auto|N] [--domain D]
         [--health /healthz] [--data /app/data] [--env-file F]
         [--cpus 0.5] [--memory 256m] [--pids 128] [--max-bundle-mb 50] [--deploys-per-hour 6]
+  cdctl project clone NAME --from PROJECT [--domain D] [--env-file F] [--port auto|N] [--yes]
   cdctl project list | show NAME
   cdctl stop NAME | start NAME
   cdctl project rm NAME [--purge]
@@ -182,6 +190,59 @@ func add(cfg project.Server, store project.Store, name string, args []string) {
 		connect(cfg, store, p, *yes)
 	default:
 		fmt.Printf("reverse proxy: cdctl caddy %s (or set up domains: cdctl domain setup)\n", p.Name)
+	}
+}
+
+// clone makes NAME run FROM's releases: FROM's build settings and limits, its own port, data, env and
+// domain. It starts at once on FROM's current image and follows every deploy of FROM from then on.
+func clone(cfg project.Server, store project.Store, name string, args []string) {
+	fs := flag.NewFlagSet("project clone", flag.ExitOnError)
+	from := fs.String("from", "", "the project whose releases NAME runs")
+	domain := fs.String("domain", "", "public domain of NAME")
+	envFile := fs.String("env-file", "", "runtime env file of NAME on the server")
+	port := fs.String("port", "auto", "host port on 127.0.0.1, or auto (3100-3999)")
+	yes := fs.Bool("yes", false, "do not ask before creating DNS records")
+	fs.Parse(args)
+	if !project.ValidName(name) {
+		die("bad project name %q (a-z, 0-9, -)", name)
+	}
+	if _, err := store.Get(name); err == nil {
+		die("project %s already exists", name)
+	}
+	src := get(store, *from)
+	if src.Follows != "" {
+		die("%s follows %s itself: clone %s", src.Name, src.Follows, src.Follows)
+	}
+	p := *src
+	p.Name, p.Allow, p.Follows, p.Domain, p.EnvFile, p.DNSRecordID, p.Stopped = name, nil, src.Name, *domain, *envFile, "", false
+	if *port == "auto" {
+		p.Port = freePort(store)
+	} else {
+		n, err := strconv.Atoi(*port)
+		if err != nil {
+			die("--port: %v", err)
+		}
+		p.Port = n
+	}
+	if err := store.Put(&p); err != nil {
+		die("%v", err)
+	}
+	fmt.Printf("project %s follows %s on 127.0.0.1:%d\n", p.Name, src.Name, p.Port)
+
+	e := &engine.Engine{StateDir: cfg.StateDir}
+	st, err := e.Release(src)
+	if err != nil {
+		die("%s has no release yet: deploy it first", src.Name)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	r := e.Adopt(ctx, &p, st.Image, st.SHA, "clone of "+src.Name, os.Stdout)
+	if r.Code != engine.OK {
+		die("%s did not start: %s", p.Name, r.Msg)
+	}
+	fmt.Printf("%s %s\n", p.Name, r.Msg)
+	if p.Domain != "" && cfg.DNS != nil {
+		connect(cfg, store, &p, *yes)
 	}
 }
 

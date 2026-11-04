@@ -27,7 +27,10 @@ func (fakeVerifier) Verify(_ context.Context, raw string) (oidc.Claims, error) {
 	return oidc.Claims{"iss": project.GitHubIssuer, "repository": repo, "ref": ref}, nil
 }
 
-type fakeEngine struct{ deployed string }
+type fakeEngine struct {
+	deployed string
+	adopted  []string
+}
 
 func (f *fakeEngine) Deploy(_ context.Context, p *project.Project, sha, _ string, src io.Reader, out io.Writer) engine.Result {
 	b, _ := io.ReadAll(src)
@@ -44,10 +47,18 @@ func (f *fakeEngine) Logs(context.Context, *project.Project, int, io.Writer) eng
 func (f *fakeEngine) Rollback(context.Context, *project.Project, io.Writer) engine.Result {
 	return engine.Result{}
 }
+func (f *fakeEngine) Release(p *project.Project) (engine.State, error) {
+	return engine.State{Image: "cd-" + p.Name + ":abc1234", SHA: "abc1234"}, nil
+}
+func (f *fakeEngine) Adopt(_ context.Context, p *project.Project, image, _, _ string, _ io.Writer) engine.Result {
+	f.adopted = append(f.adopted, p.Name+"="+image)
+	return engine.Result{Code: engine.OK, Msg: "runs"}
+}
 
 func setup(t *testing.T) (*httptest.Server, *fakeEngine) {
 	t.Helper()
 	store := project.Store{Dir: t.TempDir()}
+	lastStoreDir = store.Dir
 	if err := store.Put(&project.Project{Name: "app", Type: "node", Port: 3100,
 		Allow: []project.Rule{{"iss": project.GitHubIssuer, "repository": "me/app", "ref": "refs/heads/main"}}}); err != nil {
 		t.Fatal(err)
@@ -176,3 +187,30 @@ func TestDeploysPerHour(t *testing.T) {
 		t.Fatalf("after the first one aged out: %d %q", code, body)
 	}
 }
+
+// A deploy carries its followers along: they run the new image; a stopped follower stays as it is; nobody
+// deploys a follower directly.
+func TestFollowers(t *testing.T) {
+	srv, eng := setup(t)
+	store := project.Store{Dir: storeDir(t, srv)}
+	for _, f := range []*project.Project{{Name: "shop-a", Type: "node", Port: 3101, Follows: "app"},
+		{Name: "shop-b", Type: "node", Port: 3102, Follows: "app", Stopped: true}} {
+		if err := store.Put(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body := call(t, srv.URL+"/v1/deploy?project=app&sha=abc1234", "me/app:refs/heads/main", "bundle")
+	if code != http.StatusOK || !strings.Contains(body, "follower shop-a") {
+		t.Fatalf("deploy: %d %s", code, body)
+	}
+	if strings.Join(eng.adopted, ",") != "shop-a=cd-app:abc1234" {
+		t.Fatalf("adopted: %v", eng.adopted)
+	}
+	if code, _ := call(t, srv.URL+"/v1/deploy?project=shop-a&sha=abc1234", "me/app:refs/heads/main", "bundle"); code != http.StatusForbidden {
+		t.Fatalf("a follower was deployed directly: %d", code)
+	}
+}
+
+var lastStoreDir string
+
+func storeDir(*testing.T, *httptest.Server) string { return lastStoreDir }

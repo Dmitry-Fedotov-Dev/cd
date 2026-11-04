@@ -124,6 +124,35 @@ func (e *Engine) Deploy(ctx context.Context, p *project.Project, sha, by string,
 	return Result{OK, "deployed " + short(sha)}
 }
 
+// Release is the project's current release; an error when it was never deployed.
+func (e *Engine) Release(p *project.Project) (State, error) { return e.state(p) }
+
+// Adopt runs image, built for another project, as p's release: a follower (a shop cloned from a template)
+// runs the template's build with its own port, data and env. The image stays the other project's: p's
+// prune never touches it.
+func (e *Engine) Adopt(ctx context.Context, p *project.Project, image, sha, by string, out io.Writer) Result {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := os.MkdirAll(e.dir(p), 0o755); err != nil {
+		return Result{Failed, err.Error()}
+	}
+	st, _ := e.state(p)
+	if st.Image == image && e.quiet(ctx, "container", "inspect", container(p)) == nil {
+		return Result{OK, "already runs " + short(sha)}
+	}
+	if r := e.swap(ctx, p, image, out); r.Code != OK {
+		return r
+	}
+	next := State{Image: image, SHA: sha, At: time.Now().UTC(), DeployedBy: by}
+	if st.Image != "" && st.Image != image {
+		next.Previous, next.PrevSHA = st.Image, st.SHA
+	}
+	if err := e.saveState(p, next); err != nil {
+		fmt.Fprintf(out, "warning: state not saved: %v\n", err)
+	}
+	return Result{OK, "runs " + short(sha)}
+}
+
 // Rollback swaps the previous image back in.
 func (e *Engine) Rollback(ctx context.Context, p *project.Project, out io.Writer) Result {
 	if !e.mu.TryLock() {

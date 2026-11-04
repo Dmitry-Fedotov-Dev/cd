@@ -127,6 +127,18 @@ sudo cdctl project list
 Only `me/app` on `main` (in the `production` environment) can deploy `app`; nothing else can,
 including other projects on the same server. To revoke: `cdctl project rm app`.
 
+**Clones: many sites from one build.** A project can run another project's releases with its own
+port, data, env and domain, and follows every deploy of it:
+
+```bash
+sudo cdctl project clone shop-anna --from shop --env-file /etc/cdd/env/shop-anna.env --domain anna.example.net
+```
+
+The clone starts at once on `shop`'s current image; when `shop` deploys, the clone gets the new release
+too (a clone that fails its health check keeps its old one). Nobody deploys a clone directly. A domain
+outside the zone of `cdctl domain setup` is fine when it already points to the server, for example by a
+wildcard record `*.example.net` made by hand: cd then only writes the Caddy site.
+
 **Domains, automatically** (Porkbun DNS + Caddy). Once per server:
 
 ```bash
