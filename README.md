@@ -61,7 +61,9 @@ curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/init.sh &
 
 [`init.sh`](init.sh) checks the server answers, adds `.github/workflows/deploy.yml` for project
 `app`, sets the repository variable `CD_SERVER`, commits only that file and pushes; the first
-deploy starts at once. Deploys follow the repository's default branch (`main`, `master`, …): allow
+deploy starts at once. A `deploy.yml` that already deploys that project with cd (the starter with the
+project's tests added, say) is kept as it is: `init.sh` only sets `CD_SERVER` and starts the first
+deploy. Deploys follow the repository's default branch (`main`, `master`, …): allow
 that branch on the server (`cdctl project add … --branch master`; `main` is the default). By hand instead:
 
 **GitHub.** Copy [`starters/github-deploy.yml`](starters/github-deploy.yml) to

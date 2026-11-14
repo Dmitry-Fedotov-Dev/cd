@@ -4,7 +4,8 @@
 #   curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/init.sh && bash init.sh PROJECT SERVER
 #   e.g.  bash init.sh app https://deploy.example.com
 #
-# It adds .github/workflows/deploy.yml for PROJECT, sets the repository variable CD_SERVER
+# It adds .github/workflows/deploy.yml for PROJECT (or keeps one that already deploys PROJECT
+# with cd), sets the repository variable CD_SERVER
 # (with the GitHub CLI, logged in), commits only that file and pushes. From then on every push
 # to the repository's default branch (main, master, ...) deploys. The server's owner allows the
 # repository first: cdctl project add PROJECT --repo OWNER/REPO --branch DEFAULT-BRANCH.
@@ -45,27 +46,54 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 # runs in a repository on master, and nothing says so.
 default=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null) || default=""
 [ -n "$default" ] || fail "cannot read the default branch of $repo"
-[ ! -e "$workflow" ] || fail "$workflow already exists: delete it to start over"
+# A workflow that already deploys this project with cd (the starter plus the project's own tests,
+# say) is kept as it is: only the server address is missing. Anything else is not ours to touch.
+existing=""
+started=""
+if [ -e "$workflow" ]; then
+  if grep -q "uses: Dmitry-Fedotov-Dev/cd@" "$workflow" && grep -Eq "^[[:space:]]*project: ${project}[[:space:]]*$" "$workflow"; then
+    existing=1
+  else
+    fail "$workflow already exists and does not deploy project $project with cd: delete it to start over"
+  fi
+fi
 health=$(curl -fsS --max-time 15 "$server/v1/healthz" 2>/dev/null) || fail "no cd server answers at $server"
 say "repository $repo, branch $branch (deploys from $default)"
 say "server     $server ($health)"
 say "project    $project"
 
-step "adding $workflow"
-mkdir -p "$(dirname "$workflow")"
-curl -fsSL "$starter" | sed -e "s/CHANGE-ME/$project/" -e "s/branches: \[main\]/branches: [$default]/" >"$workflow"
-grep -q "project: $project" "$workflow" || fail "could not write $workflow"
-grep -q "branches: \[$default\]" "$workflow" || fail "could not set branch $default in $workflow"
-say "deploys project $project on every push to $default"
+if [ -n "$existing" ]; then
+  step "keeping $workflow"
+  say "it already deploys project $project with cd: not changed"
+else
+  step "adding $workflow"
+  mkdir -p "$(dirname "$workflow")"
+  curl -fsSL "$starter" | sed -e "s/CHANGE-ME/$project/" -e "s/branches: \[main\]/branches: [$default]/" >"$workflow"
+  grep -q "project: $project" "$workflow" || fail "could not write $workflow"
+  grep -q "branches: \[$default\]" "$workflow" || fail "could not set branch $default in $workflow"
+  say "deploys project $project on every push to $default"
+fi
 
 step "setting the repository variable CD_SERVER"
 gh variable set CD_SERVER --repo "$repo" --body "$server"
 
-step "commit and push"
-git add "$workflow"
-git commit -q -m "Deploy to $server with cd" -- "$workflow"
-git push -q
-say "pushed to $branch"
+if [ -n "$existing" ]; then
+  # Nothing to commit, so no push starts the first deploy: start it by hand, the way the
+  # starter's manual run does. A workflow without workflow_dispatch waits for the next push.
+  step "first deploy"
+  if gh workflow run "$(basename "$workflow")" --repo "$repo" --ref "$default" >/dev/null 2>&1; then
+    say "started on $default"
+    started=1
+  else
+    say "could not start it by hand: it starts with the next push to $default"
+  fi
+else
+  step "commit and push"
+  git add "$workflow"
+  git commit -q -m "Deploy to $server with cd" -- "$workflow"
+  git push -q
+  say "pushed to $branch"
+fi
 
 # the downloaded init.sh is not part of the repository
 if [ -f "$here/init.sh" ] && ! git ls-files --error-unmatch "$here/init.sh" >/dev/null 2>&1; then
@@ -73,7 +101,9 @@ if [ -f "$here/init.sh" ] && ! git ls-files --error-unmatch "$here/init.sh" >/de
 fi
 
 step "done"
-if [ "$branch" = "$default" ]; then
+if [ -n "$existing" ]; then
+  [ -z "$started" ] || say "The first deploy is running now: GitHub → $repo → Actions (or: gh run watch)."
+elif [ "$branch" = "$default" ]; then
   say "The first deploy is running now: GitHub → $repo → Actions (or: gh run watch)."
 else
   say "Deploys run from $default: merge $branch into $default to deploy."
