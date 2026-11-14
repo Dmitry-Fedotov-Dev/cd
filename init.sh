@@ -6,8 +6,8 @@
 #
 # It adds .github/workflows/deploy.yml for PROJECT, sets the repository variable CD_SERVER
 # (with the GitHub CLI, logged in), commits only that file and pushes. From then on every push
-# to main deploys. The server's owner allows the repository first:
-# cdctl project add PROJECT --repo OWNER/REPO.
+# to the repository's default branch (main, master, ...) deploys. The server's owner allows the
+# repository first: cdctl project add PROJECT --repo OWNER/REPO --branch DEFAULT-BRANCH.
 set -euo pipefail
 
 ref=v1 # the cd version the workflow uses
@@ -41,17 +41,22 @@ cd "$top"
 repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) ||
   fail "this folder is not a GitHub repository (or gh cannot see it)"
 branch=$(git rev-parse --abbrev-ref HEAD)
+# Deploys follow the default branch, whatever it is called: a starter hard-wired to main never
+# runs in a repository on master, and nothing says so.
+default=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null) || default=""
+[ -n "$default" ] || fail "cannot read the default branch of $repo"
 [ ! -e "$workflow" ] || fail "$workflow already exists: delete it to start over"
 health=$(curl -fsS --max-time 15 "$server/v1/healthz" 2>/dev/null) || fail "no cd server answers at $server"
-say "repository $repo, branch $branch"
+say "repository $repo, branch $branch (deploys from $default)"
 say "server     $server ($health)"
 say "project    $project"
 
 step "adding $workflow"
 mkdir -p "$(dirname "$workflow")"
-curl -fsSL "$starter" | sed "s/CHANGE-ME/$project/" >"$workflow"
+curl -fsSL "$starter" | sed -e "s/CHANGE-ME/$project/" -e "s/branches: \[main\]/branches: [$default]/" >"$workflow"
 grep -q "project: $project" "$workflow" || fail "could not write $workflow"
-say "deploys project $project on every push to main"
+grep -q "branches: \[$default\]" "$workflow" || fail "could not set branch $default in $workflow"
+say "deploys project $project on every push to $default"
 
 step "setting the repository variable CD_SERVER"
 gh variable set CD_SERVER --repo "$repo" --body "$server"
@@ -68,9 +73,10 @@ if [ -f "$here/init.sh" ] && ! git ls-files --error-unmatch "$here/init.sh" >/de
 fi
 
 step "done"
-if [ "$branch" = main ]; then
+if [ "$branch" = "$default" ]; then
   say "The first deploy is running now: GitHub → $repo → Actions (or: gh run watch)."
 else
-  say "Deploys run from main: merge $branch into main to deploy."
+  say "Deploys run from $default: merge $branch into $default to deploy."
 fi
-say "If it ends with 'not allowed', the server's owner has not allowed $repo for $project yet."
+say "If it ends with 'not allowed', the server's owner has not allowed $repo for $project yet:"
+say "  cdctl project add $project --repo $repo --branch $default"

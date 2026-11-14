@@ -65,6 +65,8 @@ install -m 0755 "$bindir/cdctl" /usr/local/bin/cdctl
 
 echo "==> config"
 install -d -m 0750 /etc/cdd /etc/cdd/projects /var/lib/cdd
+# projects' env files (cdctl project add --env-file /etc/cdd/env/NAME.env): secrets, root only
+install -d -m 0700 /etc/cdd/env
 if [ ! -f /etc/cdd/cdd.json ]; then
   cat >/etc/cdd/cdd.json <<EOF
 {

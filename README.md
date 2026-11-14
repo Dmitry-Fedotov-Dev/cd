@@ -9,7 +9,7 @@ curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/install.s
 # 2. on the server: allow a repository to deploy project "app"
 sudo cdctl project add app --repo you/app --type node --domain app.example.com
 
-# 3. in the repository's folder (GitHub CLI logged in): connect it; every push to main deploys
+# 3. in the repository's folder (GitHub CLI logged in): connect it; every push to the default branch deploys
 curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/init.sh && bash init.sh app https://deploy.example.com
 ```
 
@@ -61,10 +61,11 @@ curl -fsSLO https://raw.githubusercontent.com/Dmitry-Fedotov-Dev/cd/v1/init.sh &
 
 [`init.sh`](init.sh) checks the server answers, adds `.github/workflows/deploy.yml` for project
 `app`, sets the repository variable `CD_SERVER`, commits only that file and pushes; the first
-deploy starts at once. By hand instead:
+deploy starts at once. Deploys follow the repository's default branch (`main`, `master`, …): allow
+that branch on the server (`cdctl project add … --branch master`; `main` is the default). By hand instead:
 
 **GitHub.** Copy [`starters/github-deploy.yml`](starters/github-deploy.yml) to
-`.github/workflows/deploy.yml`, set the project name, and add the repository variable
+`.github/workflows/deploy.yml`, set the project name (and the branch, if it is not `main`), and add the repository variable
 `CD_SERVER` (Settings → Secrets and variables → Actions → Variables). The workflow needs
 `permissions: id-token: write`.
 
