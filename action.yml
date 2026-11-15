@@ -1,7 +1,5 @@
 name: cd deploy
-description: >-
-  Deploy the repository to a cd server, or ask it for status, logs or a rollback. Authenticates
-  with the job's OIDC token (needs `permissions: id-token: write`); no secrets to store.
+description: Deploy a repo to a cd server, or get status, logs, and rollbacks via OIDC (no secrets needed).
 branding:
   icon: upload-cloud
   color: green
